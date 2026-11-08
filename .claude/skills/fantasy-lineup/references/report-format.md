@@ -1,52 +1,40 @@
-# Report format (Step 7)
+# Report format (Step 8)
 
-Use markdown tables. Give the user the full lineup, the position-by-position decision, and the reasons behind each move.
+The tool output is already ordered and mostly in markdown tables. Keep its order, tighten the wording, and add explanations. Put actions first. Do not bury them under data.
 
-Start with the **Data status** section from the tool output, so the user sees what was and was not used.
+## 1. Do this in Yahoo
 
-## Lineup table
+A numbered list, copied from the tool's **Do this in Yahoo** section, in order:
 
-One row per roster player, grouped by position, starters first.
+- `START <player> at <slot>, bench <player> (<reason>) (+X.X proj pts)`
+- `ADD <player> / DROP <player>`: recommended moves only.
+- Any `EMPTY SLOT`, with what to do about it.
 
-| Position | Slot | Player (team) | Weekly rank | Bye / injury | Expert median | Action | Why (reporting) |
-|---|---|---|---|---|---|---|---|
+If there are no actions, say that the current lineup is already the best legal lineup. Then give the projected points line (current vs recommended) and the matchup line (opponent, FantasyPros win probability, stance).
 
-- Cover QB, RB/WR/TE (FLEX), K, and DST. Include every bench player.
-- **Action** is one of: `Start`, `Sit (bench)`, `Start over <name>`, `Add <name> / Drop <name>`, or `Hold`.
-- For QB, K, and DST, the action is the best-ranked healthy, non-bye player at that position.
-- Write `unchecked` in the injury column when injury data was not fetched for that player.
-- Write `not on cheat sheet` in the rank column for players the cheat sheet does not list.
+## 2. Data status
 
-## Week-over-week FLEX table
+Copy the tool's Data status bullets and the experts-per-consensus line. Say plainly what was missing and what that means, for example "role evidence unavailable: API rate limited, so moves stay provisional".
 
-| Slot | This week's pick | Rank now | Last week's starter | Rank now | Result |
-|---|---|---|---|---|---|
+## 3. Lineup
 
-- Result is `IMPROVED` or `NO IMPROVEMENT`.
-- Mark any player marked `[no longer available]`.
+The tool's **Recommended lineup** table: one row per slot, with weekly rank and its expert range, projection, grade, opponent, ROS rank, and bye/injury/lock. Then the bench. Then **Close calls**, one line each with both projections, the choice, and the reason.
 
-## Moves table
+## 4. Moves
 
-Include only moves that pass the rules in [pick-rules.md](pick-rules.md).
+- The moves table for recommended moves.
+- For each recommended or provisional move, an **Evidence** block with one line per item: breadth, two-horizon, availability, role, matchup. Cite FantasyPros news with its date. Write `not checked` where the tool said so.
+- Label provisional moves "do not act yet" and name what is missing. If you promoted one under the promotion rule, say so and cite the items.
+- **Held** moves: gate name and reason, one line each.
+- The **Net change** and **Trend** lines.
 
-| Add | Drop | Position | Rank change | Expert split | Week-over-week | Reporting |
-|---|---|---|---|---|---|---|
+## 5. Ahead and optional
 
-For a web-source run, use this table instead, one row per move that passed all tests in [pick-rules.md](pick-rules.md) section 7:
-
-| Add | Drop | Weekly rank (in / out) | ROS rank (in / out) | ROS median (in / out) | Experts (ROS / weekly) | Roster ROS avg after | Tests passed |
-|---|---|---|---|---|---|---|---|
-
-Then add a **Net change** line: starter ROS average before and after the moves, and whether it is better.
-
-For each recommended move, add an **Evidence** block with the five items from [pick-rules.md](pick-rules.md) section 8: expert breadth (count and which experts), two-horizon agreement, availability, dated role reporting, and dated matchup reporting. Write `not checked` where an item is missing, and list that move as provisional, not recommended.
-
-Also list **held** moves: the candidates that failed a test, with the test name and the reason (for example, `Test C: only 2 of 20 QB experts`). Show held moves, so the user can see what was not recommended and why.
-
-## Player notes
-
-For each player you recommend moving, give one or two sentences on why. Draw from the research in [research.md](research.md) (if done) and the cheat-sheet and expert data. Name the source and date. Say when the reporting is thin or was not checked.
+- **Byes and injuries ahead.** Any slot gaps in the next 3 weeks.
+- **Streaming options (QB/K/DST)**, labeled as ungated (see [pick-rules.md](pick-rules.md) section 8).
+- **Free agents to watch.** At most 3 per group, preferring rising players (positive trend) with low ownership.
+- **Last week's grade**, if `grade_week` ran: the advice gain and the points left on the bench.
 
 ## Closing
 
-Do not make roster changes. Tell the user which moves to make in Yahoo. Then state the caveats in [caveats.md](caveats.md) that apply to these results.
+Do not make roster changes. Tell the user to make the moves in Yahoo, and suggest when to check again (see "Timing" in SKILL.md). Then state the caveats in [caveats.md](caveats.md) that apply.

@@ -9,11 +9,14 @@ Tools:
     set_source          Choose the data source; writes FP_SOURCE to .env
     set_web_session     Web source only: set up the logged-in session by approach
                         ('mitmproxy' imports the browser capture; 'login' uses .env credentials)
-    run_weekly          Step 2: weekly lineup analysis (optional week override)
-    run_ros             Step 2: rest-of-season analysis
+    run_weekly          Step 2: weekly lineup, close calls, gated add/drops (optional week override)
+    run_ros             Step 2: rest-of-season add/drop view
+    player_news         FantasyPros news for given player ids (needs FP_API_KEY)
+    grade_week          Score a past week's advice with actual FantasyPros points; updates the season log
+    season_log          Season totals of graded weeks
     list_league_teams   Step 4: list teams from the captured league (no key returned)
     save_team           Step 4: save the chosen team id and league key to .env
-    list_snapshots      Step 5: saved weekly snapshots used for the FLEX week-over-week check
+    list_snapshots      Saved weekly snapshots (used for the trend and for grading)
 
 The run tools read FP_SOURCE from .env on every call, so changing the source takes effect without a
 restart.
@@ -180,18 +183,77 @@ async def _run(ctx: Context, kind: str, week: int | None) -> str:
 
 @mcp.tool()
 async def run_weekly(ctx: Context, week: int | None = None) -> str:
-    """Run the weekly lineup analysis and return the report. Week defaults to the current NFL week.
+    """Run the weekly analysis and return the report. Week defaults to the current NFL week.
 
-    Cheat-sheet rankings and the roster are required. Injuries and per-expert picks are optional;
-    if they are missing the report says so in its Data status section.
+    Returns the best legal lineup for the league's slots, close calls, add/drop moves with every gate
+    and evidence item already evaluated (RECOMMEND / PROVISIONAL / held), byes ahead, and Data status.
+    Cheat-sheet rankings and the roster are required; everything else is optional and noted if missing.
     """
     return await _run(ctx, "weekly", week)
 
 
 @mcp.tool()
 async def run_ros(ctx: Context) -> str:
-    """Run the rest-of-season analysis and return the report. Secondary product; run only when asked."""
+    """Run the rest-of-season add/drop view (full ROS consensus). Secondary product; run only when asked.
+
+    Its moves are provisional until run_weekly confirms them for this week.
+    """
     return await _run(ctx, "ros", None)
+
+
+@mcp.tool()
+def player_news(player_ids: list[int], limit: int = 3) -> str:
+    """Latest FantasyPros news (date, title, impact) for up to 6 FantasyPros player ids. Needs FP_API_KEY.
+
+    Use it for dated role and matchup evidence. Player ids are the fpId values in the run reports.
+    """
+    _reload_env()
+    if not fpa.has_api_key():
+        return "ERROR: FP_API_KEY is not set, so FantasyPros news is not available"
+    ids = [int(i) for i in player_ids][:6]
+    limit = max(1, min(int(limit), 10))
+    lines = []
+    for fid in ids:
+        try:
+            items = fpa.news_for(fid, limit)
+        except Exception as exc:  # optional data: report it and keep going
+            lines.append(f"{fid}: news unavailable ({exc})")
+            continue
+        if not items:
+            lines.append(f"{fid}: no recent FantasyPros news")
+        for n in items:
+            impact = f" — {n['impact']}" if n.get("impact") else ""
+            lines.append(f"{fid}: {n['date']} {n['title']}{impact}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def grade_week(week: int | None = None) -> str:
+    """Grade a past week's advice with FantasyPros' actual points and update the season log.
+
+    Week defaults to the latest saved snapshot whose games have points. Needs FP_API_KEY.
+    """
+    from fantasy_lineup import grade
+    _reload_env()
+    out: dict[str, str] = {}
+
+    def go():
+        out["text"] = grade.grade_week(week)
+    text, problem = await asyncio.to_thread(_capture, go)
+    if problem:
+        return f"{text}\nERROR: {problem}".strip()
+    return out.get("text", text)
+
+
+@mcp.tool()
+def season_log() -> str:
+    """Season totals of graded weeks: points the advice gained and points left on the bench."""
+    from fantasy_lineup import grade
+    _reload_env()
+    try:
+        return grade.season_summary()
+    except SystemExit as exc:
+        return f"ERROR: {exc.code}"
 
 
 @mcp.tool()
@@ -210,7 +272,7 @@ def save_team(team_id: str) -> str:
 
 @mcp.tool()
 def list_snapshots() -> str:
-    """List saved weekly snapshots, which the FLEX week-over-week check compares against. Shows the source of each."""
+    """List saved weekly snapshots (used for the trend line and by grade_week). Shows the source of each."""
     lines = []
     for source in ("api", "web"):
         hist = fpa.history_dir(source)

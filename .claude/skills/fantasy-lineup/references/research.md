@@ -1,17 +1,23 @@
-# Research on recommended players (Step 6, optional)
+# Evidence from FantasyPros only (Step 7)
 
-The rankings do not include news. News is nice to have for the lineup assessment and is not required for it. **Exception:** for any proposed add, drop, or swap on the web source, dated role and matchup reporting is required. Without it the move is provisional, not recommended. See [pick-rules.md](pick-rules.md) section 8.
+The user wants **FantasyPros data only**. Do not use WebSearch. Do not fetch or cite any site outside the allowlist.
 
-If time and the rate limit allow, use WebSearch for the players you recommend starting, benching, adding, or dropping. Look for:
+## Allowlist
 
-- Injury designation and practice status (Limited, Full, DNP) from the team beat writer or the NFL injury report.
-- Role changes: snap share, target share, carries, depth-chart moves, or a QB change.
-- Matchup notes: the opposing defense, weather, or game script.
-- Weekly player descriptions and expert commentary, which are not in the feed.
-- The date of each source.
+- MCP tool results (`run_weekly`, `run_ros`, `player_news`, `grade_week`). These read `api.fantasypros.com`, `partners.fantasypros.com`, `mpbnfl.fantasypros.com`, and `www.fantasypros.com`.
+- WebFetch of `https://www.fantasypros.com/...` pages only. Typical use is a player's page, from the `url` field in the run output (for example `https://www.fantasypros.com/nfl/players/<name>.php`), which carries FantasyPros' latest news and notes for that player.
 
-Prefer team beat reporters, the NFL injury report, and established fantasy news.
+## When to research
 
-- If nothing recent turns up, write `no recent reporting found`.
-- Do not invent reporting.
-- If the research is skipped, say so in the report.
+The report already contains the evidence the tool could gather. Research only to fill a `PROVISIONAL` move whose only missing item is `role` (see [pick-rules.md](pick-rules.md) section 5). Keep it to the players in those moves.
+
+1. Call `player_news` with the two players' `fpId` values. It needs `FP_API_KEY`.
+2. If that fails or returns nothing, WebFetch each player's FantasyPros page (the `url` from the report) and read the latest news item.
+3. Use an item only if it is dated within the last 14 days and says something about the player's role: snaps, targets, carries, depth chart, or a QB change. Cite it as `FantasyPros, <date>: <headline>`.
+4. If nothing qualifies, write `no recent reporting found` and leave the move provisional.
+
+## Rules
+
+- Do not invent reporting. Every cited item has a FantasyPros source and a date.
+- Do not research players whose moves were held. The gate result stands.
+- If research was skipped, say so in the report.

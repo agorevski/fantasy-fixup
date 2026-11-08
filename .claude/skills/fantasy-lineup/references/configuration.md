@@ -8,8 +8,8 @@ Run this before any tool that calls the API, the website, or the league feed. Ru
    - If the tool itself fails, tell the user to check that the MCP server is connected: `.mcp.json` is present, and `.venv` has `requirements.txt` installed.
 
 2. **Choose the source only if `FP_SOURCE` is missing.** Ask with AskUserQuestion: "Which data source?"
-   - `Public API (default)`: sets `FP_SOURCE=api`
-   - `FantasyPros website (web UX)`: sets `FP_SOURCE=web`
+   - `FantasyPros website (recommended)`: sets `FP_SOURCE=web`. It ranks every rostered player. With `FP_API_KEY` also set, it adds practice reports, news, and recent points from the public API.
+   - `Public API`: sets `FP_SOURCE=api`. The free tier's in-season rankings may be waiver-wire lists that leave out rostered players.
    - Call `set_source` with the answer.
 
 3. **If the source is `web` and the session is not saved or not logged in, set up the session.** Ask with AskUserQuestion: "How should the website session be set up?" The first option is the default.
@@ -20,11 +20,12 @@ Run this before any tool that calls the API, the website, or the league feed. Ru
 
 4. **If all required settings are present, skip the confirmation prompt.** Do not ask with AskUserQuestion. List the settings as present and go straight to the run.
 
-5. **Otherwise, ask for confirmation.** Show the check result as a list of settings marked present or missing. Then ask with AskUserQuestion, for example: "Are your configurations set and ready? (`FP_API_KEY` in `.env` is required for the API source; `FP_LEAGUE_KEY` and `FP_TEAM_ID` are required for the roster; `FP_SEASON` defaults to 2026.)"
+5. **Otherwise, ask for confirmation.** Show the check result as a list of settings marked present or missing. Then ask with AskUserQuestion, for example: "Are your configurations set and ready? (`FP_API_KEY` in `.env` is required for the API source and recommended for the web source; `FP_LEAGUE_KEY` and `FP_TEAM_ID` are required for the roster; `FP_SEASON` defaults to 2026.)"
    - Options: `All set, continue`, `Need to fix .env first (stop here)`.
 
 6. Do not proceed unless the user confirms. If the user confirms but a required setting is still missing, stop and name it.
-   - **`FP_API_KEY` missing:** tell the user to add `FP_API_KEY=<your key>` to `.env`. They can copy the line from `.env.example` and fill it in. Do not ask them to paste the key into chat, and do not write it anywhere except `.env`.
+   - **`FP_API_KEY` missing on the web source:** not an error. Say that injuries come from the site's table (no practice reports), and that moves will lack role evidence and stay provisional.
+   - **`FP_API_KEY` missing on the API source:** tell the user to add `FP_API_KEY=<your key>` to `.env`. They can copy the line from `.env.example` and fill it in. Do not ask them to paste the key into chat, and do not write it anywhere except `.env`.
    - **`FP_LEAGUE_KEY` or `FP_TEAM_ID` missing:** go to [league-capture.md](league-capture.md).
    - **`FP_SEASON` blank or missing:** not an error. The code defaults to 2026.
    - **Web source without a session:** handled by step 3 above.

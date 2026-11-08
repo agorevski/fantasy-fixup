@@ -2,7 +2,8 @@
 
 Selected with FP_SOURCE=web in .env. The default source is the public API in advisor.py. This
 module reads the site's own JSON endpoints (partners.fantasypros.com for rankings and expert groups)
-and the injury table on www.fantasypros.com, so the two sources can be compared.
+and the injury table on www.fantasypros.com, so the two sources can be compared. When FP_API_KEY is
+set, injuries come from the public API instead, because its report includes practice participation.
 
 Sessions come from one of two approaches, chosen when the session is set up:
   mitmproxy  import the cookies that src/fantasy_lineup/capture_addon.py saved to var/capture/auth.json  (default)
@@ -27,6 +28,7 @@ from collections.abc import Callable
 
 from fantasy_lineup.client import _is_logged_in, page_json_var
 from fantasy_lineup.paths import AUTH_CAPTURE, SESSION_FILE, WEB_CACHE_DIR
+from fantasy_lineup.rankings import consensus_info, parse_players
 
 PARTNERS = "https://partners.fantasypros.com/api/v1"
 WWW = "https://www.fantasypros.com"
@@ -176,9 +178,10 @@ class WebBackend:
 
     name = "web"
 
-    def __init__(self, year: str, status: Callable[[str], None] = print):
+    def __init__(self, year: str, status: Callable[[str], None] = print, scoring: str = "STD"):
         self.year = year
         self.status = status
+        self.scoring = scoring
         self.cookie = _cookie_header()
 
     def current_week(self) -> int | None:
@@ -187,14 +190,16 @@ class WebBackend:
         week = page_json_var(page, "ecrData").get("week")
         return int(week) if str(week or "").isdigit() and int(week) > 0 else None
 
-    def expert_ids(self, kind: str, grp: str, n: int, week: int | None) -> tuple[list[int], dict[int, str]]:
+    def expert_ids(self, kind: str, grp: str, n: int | None, week: int | None) -> tuple[list[int], dict[int, str]]:
         """Top n experts for this group, from the site's named accuracy list ('Top N QB', 'Top N Overall').
 
         The site publishes the list, not a numeric score. The list is the site's own selection, so it
-        can differ from the public API's accuracy_weekly ranking.
+        can differ from the public API's accuracy_weekly ranking. n=None means the full consensus.
         """
+        if n is None:
+            return [], {}
         params = {"cors": 1, "sport": "NFL", "type": "weekly" if kind == "weekly" else "ros",
-                  "position": "ALL" if grp == "FLX" else grp, "scoring": "STD",
+                  "position": "ALL" if grp == "FLX" else grp, "scoring": self.scoring,
                   "week": week if kind == "weekly" else 0}
         data = self._json(f"{PARTNERS}/expert-groups.php", params, RANKINGS_TTL)
         title = f"Top {n} {'Overall' if grp == 'FLX' else grp}"
@@ -206,40 +211,34 @@ class WebBackend:
         ids = [int(x) for x in option.get("experts", [])][:n]
         return ids, {i: names.get(i, str(i)) for i in ids}
 
-    def consensus(self, kind: str, grp: str, ids: list[int], week: int | None,
-                  warnings: list[str] | None = None) -> dict[int, dict]:
-        """{player_id: {...}} for the consensus list filtered to these experts, same shape as the API client."""
+    def consensus(self, kind: str, grp: str, ids: list[int], week: int | None) -> tuple[dict[int, dict], dict]:
+        """({player_id: {...}}, info) for the consensus list filtered to these experts (all when empty).
+
+        Same shapes as the public-API client in advisor.py.
+        """
         params = {"sport": "NFL", "year": self.year, "position": "ALL" if grp == "FLX" else grp,
-                  "type": "weekly" if kind == "weekly" else "ros", "scoring": "STD",
+                  "type": "weekly" if kind == "weekly" else "ros", "scoring": self.scoring,
                   "experts": "available", "week": week if kind == "weekly" else 0,
                   "filters": ":".join(map(str, ids))}
         data = self._json(f"{PARTNERS}/consensus-rankings.php", params, RANKINGS_TTL)
-        if warnings is not None:
-            used = {int(x) for x in (data.get("experts_available") or {}).get("included", [])}
-            if used and used != set(ids):
-                warnings.append(f"{grp}: site used {len(used)} of {len(ids)} requested experts "
-                                f"(not used: {sorted(set(ids) - used)})")
-        out = {}
-        for p in data.get("players", []):
-            out[int(p["player_id"])] = {
-                "name": p["player_name"],
-                "pos": p["player_position_id"],
-                "team": p["player_team_id"],
-                "rank": int(p["rank_ecr"]),
-                "opp": p.get("player_opponent"),
-                "bye": p.get("player_bye_week"),
-                "url": p.get("player_page_url"),
-            }
-        return out
+        return parse_players(data), consensus_info(data, ids, grp, "site")
 
     def injuries(self, player_ids: list[int], week: int | None) -> dict[int, list[str]]:
-        """Status and injury from the site's injury table, as 'Status | Injury' entries.
+        """Injury entries for these players: from the public API when FP_API_KEY is set, else the site's table.
 
         The table only shows the current report, so `week` is ignored. It has no practice reports or
         comments, so only the status and injury fields are returned. Players not in the table have no entry.
         """
         if not player_ids:
             return {}
+        if os.environ.get("FP_API_KEY", "").strip():
+            # The public API's report has practice participation and play probability; the site's
+            # table does not. Fall back to the table if the API is unavailable.
+            from fantasy_lineup import advisor
+            try:
+                return advisor.injuries_for(player_ids, week, retries=0)
+            except Exception as exc:
+                self.status(f"API injury report unavailable ({exc}); using the site's injury table")
         wanted = set(player_ids)
         page = _fetch(f"{WWW}/nfl/players/injuries.php", INJURY_TTL, self.cookie).decode("utf-8", "replace")
         out: dict[int, list[str]] = {}
