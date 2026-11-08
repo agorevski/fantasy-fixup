@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "fantasy-lineup": {
+      "type": "stdio",
+      "command": ".venv/bin/python",
+      "args": ["fp_mcp_server.py"]
+    }
+  }
+}

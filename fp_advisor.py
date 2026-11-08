@@ -1,29 +1,35 @@
 """Lineup, waiver, and drop analysis for a FantasyPros-synced league.
 
-Read-only: fetches public FantasyPros rankings plus league data and prints
-recommendations. It never changes your roster.
+Read-only: fetches FantasyPros rankings, experts, and injuries from the official
+public API, plus your league roster, and prints recommendations. It never changes
+your roster.
 
 Usage:
     .venv/bin/python fp_advisor.py weekly     # start/sit, waiver adds, drops
     .venv/bin/python fp_advisor.py ros        # rest-of-season adds and drops
+    .venv/bin/python fp_advisor.py discover   # list leagues captured by mitmproxy
 
-Config (.env): FP_LEAGUE_KEY (required), FP_TEAM_ID (default 3), FP_WEEK (optional).
+Config (.env): FP_API_KEY (required), FP_LEAGUE_KEY (required), FP_TEAM_ID (default 3),
+FP_SEASON (default 2026), FP_WEEK (optional).
 
-Expert selection (from the site's own accuracy groups):
-    weekly  QB/K/DST -> Top 10 in-season accuracy at that position
-            FLX      -> Top 20 overall in-season accuracy
-    ros     QB/K/DST -> Top 20 in-season accuracy at that position (ROS pages)
-            FLX      -> Top 20 overall in-season accuracy (ROS pages)
+Expert selection (top N experts by the public API's per-position accuracy_weekly score):
+    weekly  QB/K/DST -> top 10 at that position
+            FLX      -> top 20 overall ("ALL")
+    ros     QB/K/DST -> top 20 at that position
+            FLX      -> top 20 overall ("ALL")
 """
 
+import contextvars
 import datetime as dt
+import hashlib
 import json
 import os
-import re
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -31,123 +37,167 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent
 CACHE = ROOT / ".fp_cache"
 HISTORY = CACHE / "history"
+API_CACHE = CACHE / "api"
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 )
-SITE = "https://www.fantasypros.com/nfl/rankings"
-PARTNERS = "https://partners.fantasypros.com/api/v1/consensus-rankings.php"
+API = "https://api.fantasypros.com/public/v2/json"
 MPB = "https://mpbnfl.fantasypros.com"
+
+# Free-tier limits are not published, so the client stays conservative:
+# pace live calls, retry 429s with backoff, and reuse responses cached on disk.
+MIN_INTERVAL = 1.5          # seconds between live API requests
+MAX_RETRIES = 3             # retries per request on HTTP 429
+MAX_RETRY_AFTER = 120       # longer waits than this abort the run instead of sleeping
+RANKINGS_TTL = 6 * 3600     # seconds a cached rankings/experts response stays fresh
+INJURY_TTL = 3600           # injury reports change more often
 FLEX_POS = {"RB", "WR", "TE"}
 POSITIONS = ["QB", "RB", "WR", "TE", "K", "DST"]
 
-# analysis type -> position group -> (rankings page, accuracy group id)
+# analysis type -> position group -> (API ranking type, accuracy key, number of experts)
 GROUPS = {
     "weekly": {
-        "QB": ("qb", "top10_qb_in_season"),
-        "K": ("k", "top10_k_in_season"),
-        "DST": ("dst", "top10_dst_in_season"),
-        "FLX": ("flex", "top20_all_in_season"),
+        "QB": ("WW", "QB", 10),
+        "K": ("WW", "K", 10),
+        "DST": ("WW", "DST", 10),
+        "FLX": ("WW", "ALL", 20),
     },
     "ros": {
-        "QB": ("ros-qb", "top20_qb_in_season"),
-        "K": ("ros-k", "top20_k_in_season"),
-        "DST": ("ros-dst", "top20_dst_in_season"),
-        "FLX": ("ros-flex", "top20_all_in_season"),
+        "QB": ("ROS", "QB", 20),
+        "K": ("ROS", "K", 20),
+        "DST": ("ROS", "DST", 20),
+        "FLX": ("ROS", "ALL", 20),
     },
 }
 
 
+class RateLimited(RuntimeError):
+    """HTTP 429 that did not clear after retries (or asked us to wait too long)."""
+
+
+# Where status() sends its lines. The MCP server sets this per tool call so the client sees live
+# progress; the CLI leaves it unset and status() prints to stderr. A ContextVar keeps concurrent
+# calls from receiving each other's lines.
+status_sink: contextvars.ContextVar[Callable[[str], None] | None] = contextvars.ContextVar(
+    "status_sink", default=None)
+
+
+def status(msg: str) -> None:
+    """Report a stage or a wait, e.g. 'Loading experts' or 'rate limited; waiting 10s'."""
+    sink = status_sink.get()
+    if sink:
+        sink(msg)
+    else:
+        print(f"  {msg}", file=sys.stderr)
+
+
+def season() -> str:
+    # An empty FP_SEASON= line in .env would otherwise override the default
+    return os.environ.get("FP_SEASON", "").strip() or "2026"
+
+
+def api_key() -> str:
+    key = os.environ.get("FP_API_KEY", "").strip()
+    if not key:
+        raise SystemExit("FP_API_KEY missing from .env (copy it from .env.example and add your key)")
+    return key
+
+
+_last_call = 0.0
+
+
+def _retry_after(exc: urllib.error.HTTPError) -> int | None:
+    value = (exc.headers.get("Retry-After") or "").strip()
+    return int(value) if value.isdigit() else None
+
+
+def api_get(path: str, params: dict | None = None, ttl: int = RANKINGS_TTL):
+    """GET a path under the official public API. Empty params are dropped from the query string.
+
+    Responses are cached on disk for `ttl` seconds, so a rerun after a rate limit does not repeat
+    calls that already succeeded. The API key is sent in a header only and never written to the cache.
+    """
+    global _last_call
+    qs = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v not in (None, "")})
+    url = f"{API}/{path}" + (f"?{qs}" if qs else "")
+    cache_file = API_CACHE / (hashlib.sha256(url.encode()).hexdigest() + ".json")
+    if cache_file.exists() and time.time() - cache_file.stat().st_mtime < ttl:
+        return json.loads(cache_file.read_text())
+
+    key = api_key()
+    for attempt in range(MAX_RETRIES + 1):
+        pause = MIN_INTERVAL - (time.time() - _last_call)
+        if pause > 0:
+            time.sleep(pause)
+        req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json",
+                                                   "x-api-key": key})
+        _last_call = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                body = r.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                wait = _retry_after(exc) or 10 * 3 ** attempt
+                if attempt == MAX_RETRIES or wait > MAX_RETRY_AFTER:
+                    raise RateLimited(f"FantasyPros API {path} is rate limited (HTTP 429)") from exc
+                status(f"rate limited on {path}; waiting {wait}s (retry {attempt + 1}/{MAX_RETRIES})")
+                time.sleep(wait)
+                continue
+            hint = {401: " (check FP_API_KEY)", 403: " (check FP_API_KEY and plan access)"}.get(exc.code, "")
+            raise RuntimeError(f"FantasyPros API {path} returned HTTP {exc.code}{hint}") from exc
+        data = json.loads(body)
+        API_CACHE.mkdir(mode=0o700, parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(data))
+        cache_file.chmod(0o600)
+        return data
+    raise RuntimeError("unreachable")  # the loop always returns or raises
+
+
 def get_json(url: str):
+    """League roster feed (MPB). Not part of the public API."""
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
 
 
-def get_text(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode("utf-8", errors="ignore")
+def top_experts(experts: list[dict], acc_key: str, n: int) -> tuple[list[int], dict[int, str]]:
+    """The n experts with the highest accuracy_weekly score for acc_key, and their display names."""
+    scored = [e for e in experts if (e.get("accuracy_weekly") or {}).get(acc_key) is not None]
+    scored.sort(key=lambda e: e["accuracy_weekly"][acc_key], reverse=True)
+    top = scored[:n]
+    ids = [int(e["expert_id"]) for e in top]
+    names = {int(e["expert_id"]): f"{e['name']} ({e.get('source') or 'no site'})" for e in top}
+    return ids, names
 
 
-def page_var(html: str, name: str) -> dict:
-    m = re.search(rf"var {re.escape(name)} = ", html)
-    if not m:
-        raise RuntimeError(f"'{name}' not found on rankings page (site layout may have changed)")
-    return json.JSONDecoder().raw_decode(html[m.end():])[0]
+def consensus(kind: str, grp: str, ids: list[int], week: int | None,
+              warnings: list[str] | None = None) -> dict[int, dict]:
+    """Return {fpId: {...}} for the consensus list filtered to the given experts.
 
-
-EXPERT_CACHE = CACHE / "experts.json"
-
-
-def expert_ids(page: str, group_id: str) -> tuple[list[int], dict[int, str]]:
-    """Read the accuracy-group expert IDs, and every expert's display name, from a public rankings page.
-
-    The rankings HTML can be blocked (HTTP 403). Good reads are cached in .fp_cache/experts.json, and
-    that cache is used when the page cannot be fetched, so the analysis keeps working.
+    When `warnings` is given, any difference between the experts requested and the experts the
+    API actually used, or a list shorter than the API's own limit, is appended to it.
     """
-    key = f"{page}:{group_id}"
-    cached = json.loads(EXPERT_CACHE.read_text()) if EXPERT_CACHE.exists() else {}
-    try:
-        groups = page_var(get_text(f"{SITE}/{page}.php"), "expertGroupsData")
-    except Exception as exc:
-        if key not in cached:
-            raise
-        print(f"  warning: {page}.php unavailable ({exc}); using cached expert list", file=sys.stderr)
-        return cached[key]["ids"], {int(k): v for k, v in cached[key]["names"].items()}
-    names = {int(e["id"]): f"{e['name']} ({e.get('site') or 'no site'})" for e in groups.get("expert_data", [])}
-    for opt in groups["expert_groups"]["accuracy_weekly"]["options"]:
-        if opt["id"] == group_id:
-            ids = opt.get("experts", [])
-            cached[key] = {"ids": ids, "names": {str(k): v for k, v in names.items()}}
-            CACHE.mkdir(mode=0o700, exist_ok=True)
-            EXPERT_CACHE.write_text(json.dumps(cached, indent=2))
-            EXPERT_CACHE.chmod(0o600)
-            return ids, names
-    raise RuntimeError(f"accuracy group {group_id} not offered on {page}.php")
-
-
-INJURY_TABLE = re.compile(r'<table[^>]*injury-table[^>]*>(.*?)</table>', re.S)
-
-
-INJURY_STATUS = re.compile(r'<[^>]*class="injury"[^>]*>(.*?)</', re.S)
-
-
-def _clean(html: str) -> str:
-    return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', html)).strip()
-
-
-def injury_report(url: str) -> list[str]:
-    """Injury status and injury-table rows from a player's FantasyPros page. Empty list when none are listed."""
-    html = get_text(url)
-    rows = []
-    status = INJURY_STATUS.search(html)
-    if status and _clean(status.group(1)):
-        rows.append(f"status: {_clean(status.group(1))}")
-    m = INJURY_TABLE.search(html)
-    if m:
-        for tr in re.findall(r'<tr[^>]*>(.*?)</tr>', m.group(1), re.S):
-            cells = [_clean(c) for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', tr, re.S)]
-            cells = [c for c in cells if c]
-            if cells:
-                rows.append(" | ".join(cells))
-    return rows
-
-
-def consensus(kind: str, pos: str, ids: list[int], week: int | None) -> dict[int, dict]:
-    """Return {fpId: {...}} for the consensus list filtered to the given experts."""
     params = {
-        "sport": "NFL",
-        "position": pos,
-        "type": "weekly" if kind == "weekly" else "ROS",
+        "position": grp,
+        "type": GROUPS[kind][grp][0],
         "scoring": "STD",
-        "year": os.environ.get("FP_SEASON", "2026"),
         "filters": ":".join(map(str, ids)),
         "experts": "available",
+        "week": week if kind == "weekly" else None,
     }
-    if kind == "weekly" and week:
-        params["week"] = str(week)
-    data = get_json(f"{PARTNERS}?{urllib.parse.urlencode(params)}")
+    data = api_get(f"nfl/{season()}/consensus-rankings", params)
+    if warnings is not None:
+        avail = data.get("experts_available") or {}
+        used = {int(x) for x in avail.get("included", [])}
+        if used and used != set(ids):
+            missing = sorted(set(ids) - used)
+            warnings.append(f"{grp}: API used {len(used)} of {len(ids)} requested experts "
+                            f"(not used: {missing})")
+        limit = int(data.get("limit") or 0)
+        if limit and len(data.get("players", [])) < limit:
+            warnings.append(f"{grp}: the API returned {len(data.get('players', []))} players "
+                            f"(limit {limit}); players not in that list show as unranked")
     out = {}
     for p in data.get("players", []):
         out[int(p["player_id"])] = {
@@ -159,6 +209,29 @@ def consensus(kind: str, pos: str, ids: list[int], week: int | None) -> dict[int
             "bye": p.get("player_bye_week"),
             "url": p.get("player_page_url"),
         }
+    return out
+
+
+def injuries_for(player_ids: list[int], week: int | None) -> dict[int, list[str]]:
+    """Injury status, injury type, practice reports, and comments for the given players, from one API call."""
+    if not player_ids:
+        return {}
+    data = api_get("nfl/injuries", {
+        "year": season(),
+        "week": week,
+        "player_ids": ":".join(map(str, sorted(set(player_ids)))),
+    }, ttl=INJURY_TTL)
+    out: dict[int, list[str]] = {}
+    for inj in data.get("injuries", []):
+        bits = [inj.get("status"), inj.get("injury_type")]
+        practice = [inj.get(k) for k in ("practice_1", "practice_2", "practice_3")
+                    if inj.get(k) and inj.get(k) != "--"]
+        if practice:
+            bits.append("practice " + "/".join(practice))
+        bits.append(inj.get("comment"))
+        text = " | ".join(str(b) for b in bits if b)
+        if text:
+            out.setdefault(int(inj["player_id"]), []).append(text)
     return out
 
 
@@ -210,20 +283,36 @@ def analyse(kind: str, week: int | None) -> dict:
     team_id = os.environ.get("FP_TEAM_ID", "3").strip()
     if not key:
         raise SystemExit("FP_LEAGUE_KEY missing from .env")
+    api_key()  # fail fast if the API key is not configured
     if kind == "weekly":
         week = week or api_week()
 
     lists = {}
     expert_ids_by_grp = {}
     expert_names = {}
-    for grp, (page, gid) in GROUPS[kind].items():
-        ids, names = expert_ids(page, gid)
+    warnings: list[str] = []
+    for grp, (rtype, acc_key, n) in GROUPS[kind].items():
+        # Experts are fetched per position and never served from cache, so a stale expert set
+        # cannot carry over from an earlier run.
+        status(f"Loading {grp} expert pool")
+        experts = api_get(f"nfl/{season()}/rankings/experts", {
+            "position": None if grp == "FLX" else grp,
+            "type": rtype,
+            "scoring": "STD",
+            "include_overall": "true",
+        }, ttl=0).get("experts", [])
+        ids, names = top_experts(experts, acc_key, n)
+        if len(ids) < n:
+            warnings.append(f"{grp}: only {len(ids)} of the {n} requested experts have a {acc_key} score "
+                            f"(experts in the pool: {len(experts)})")
+        status(f"Building {grp} consensus from {len(ids)} experts: " +
+               ", ".join(f"{names[i]} [{i}]" for i in ids))
         expert_ids_by_grp[grp] = ids
         expert_names.update(names)
-        pos_param = grp  # QB, K, DST, or FLX
-        lists[grp] = consensus(kind, pos_param, ids, week)
-        print(f"  {kind} {grp}: {len(lists[grp])} ranked players from {len(ids)} experts", file=sys.stderr)
+        lists[grp] = consensus(kind, grp, ids, week, warnings)
+        status(f"{grp}: {len(lists[grp])} ranked players from {len(ids)} experts")
 
+    status("Reading league owners and your roster")
     owners = league_owners(key)
     roster = my_roster(key, team_id)
     mine_ids = {p["fpId"] for p in roster}
@@ -245,8 +334,21 @@ def analyse(kind: str, week: int | None) -> dict:
         p["rank"] = rank_in(lists, p["fpId"], grp)
         rows.append(p)
 
+    notes: list[str] = []
     if kind == "weekly":
-        enrich_weekly(rows, lists, free_agents, expert_ids_by_grp, expert_names, week)
+        status("Adding per-expert picks and news notes")
+        notes = enrich_weekly(rows, lists, free_agents, expert_ids_by_grp, expert_names, week)
+    notes = warnings + notes
+
+    # Injury status for every player we looked up (roster + top free agents). Players with no
+    # injury data are treated as unchecked, not unavailable.
+    injury_of = {p["fpId"]: p.get("injury", []) for p in rows}
+    for fas in free_agents.values():
+        for f in fas:
+            injury_of[f["fpId"]] = f.get("injury", [])
+    # Never recommend an unavailable free agent (OUT, IR, Doubtful, or no practice)
+    free_agents = {g: [f for f in fas if not unavailable(injury_of.get(f["fpId"], []))]
+                   for g, fas in free_agents.items()}
 
     # Start/sit: for each group, bench players ranked better than the weakest starter
     start_sit = []
@@ -254,23 +356,28 @@ def analyse(kind: str, week: int | None) -> dict:
         for grp in GROUPS[kind]:
             starters = [r for r in rows if r["group"] == grp and r["slot"] == "starter"]
             bench = [r for r in rows if r["group"] == grp and r["slot"] == "bench"]
+            ranked_starters = [s for s in starters if s["rank"] is not None]
+            if not ranked_starters:
+                continue
+            worst = max(ranked_starters, key=lambda s: s["rank"])
             for b in bench:
-                if b["rank"] is None:
+                if b["rank"] is None or unavailable(b.get("injury", [])):
                     continue
-                worst = max(starters, key=lambda s: s["rank"] or 9999, default=None)
-                if worst and (worst["rank"] is None or b["rank"] < worst["rank"]):
+                if b["rank"] < worst["rank"]:
                     start_sit.append((b, worst))
 
     # Add/drop: a free agent ranked better than my worst player in that group
     # Pair each of my weakest players with the best free agent that beats them, one drop per player
     add_drop = []
     for grp in GROUPS[kind]:
-        drops = sorted([r for r in rows if r["group"] == grp], key=lambda r: r["rank"] or 9999, reverse=True)
+        # Unranked players are not on the list, so they cannot be compared and are never dropped
+        drops = sorted([r for r in rows if r["group"] == grp and r["rank"] is not None],
+                       key=lambda r: r["rank"], reverse=True)
         adds = list(free_agents[grp])
         for drop in drops:
             if not adds:
                 break
-            if adds[0]["rank"] < (drop["rank"] or 9999):
+            if adds[0]["rank"] < drop["rank"]:
                 add_drop.append((adds.pop(0), drop))
 
     # Weekly only: QB/K/DST take the best-ranked available player; FLEX must beat last week's lineup
@@ -278,12 +385,14 @@ def analyse(kind: str, week: int | None) -> dict:
     flex_check = []
     prior_label = None
     if kind == "weekly":
+        status("Picking best QB, K, and DST and checking last week's FLEX lineup")
         label = period_label(week)
         for grp in ("QB", "K", "DST"):
             pool = [
                 {"fpId": fid, **info}
                 for fid, info in lists[grp].items()
                 if (fid not in owners or str(owners[fid]) == team_id) and not on_bye(info, week)
+                and not unavailable(injury_of.get(fid, []))
             ]
             if pool:
                 best = min(pool, key=lambda x: x["rank"])
@@ -292,7 +401,7 @@ def analyse(kind: str, week: int | None) -> dict:
         prior = load_prior(kind, label)
         if prior:
             prior_label = prior["period"]
-            flex_check = compare_flex(prior, rows, lists["FLX"], owners, team_id, week)
+            flex_check = compare_flex(prior, rows, lists["FLX"], owners, team_id, week, injury_of)
         else:
             prior_label = None
 
@@ -307,16 +416,20 @@ def analyse(kind: str, week: int | None) -> dict:
         "best_picks": best_picks,
         "prior_period": prior_label,
         "flex_vs_prior": flex_check,
+        "notes": notes,
     }
     return res
 
 
 def enrich_weekly(rows: list[dict], lists: dict, free_agents: dict, expert_ids_by_grp: dict,
-                  expert_names: dict[int, str], week: int | None) -> None:
+                  expert_names: dict[int, str], week: int | None) -> list[str]:
     """Add bye week, injury report, and each expert's own rank to roster rows and top free agents.
 
-    Expert picks come from the same accuracy groups used for the rankings (one filtered call per expert).
+    Bucket 2 (optional): injuries and per-expert picks. A failure here never stops the analysis;
+    it is returned as a note and the affected fields are marked as unavailable.
+    Bye weeks come from the cheat-sheet rankings (bucket 1) and are always present.
     """
+    notes: list[str] = []
     for r in rows:
         info = lists.get(r["group"], {}).get(r["fpId"]) or {}
         r["bye"] = info.get("bye")
@@ -327,35 +440,43 @@ def enrich_weekly(rows: list[dict], lists: dict, free_agents: dict, expert_ids_b
     for t in targets:
         t["bye_now"] = on_bye(t, week)
 
-    # Injury report: one player page each, fetched in parallel
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {t["fpId"]: pool.submit(injury_report, t["url"]) for t in targets if t.get("url")}
+    # Injury report: one API call for every target
+    try:
+        injuries = injuries_for([t["fpId"] for t in targets], week)
         for t in targets:
-            fut = futures.get(t["fpId"])
-            if fut is None:
-                continue
-            try:
-                t["injury"] = fut.result()
-            except Exception as exc:  # report the failure instead of hiding it
-                t["injury"] = [f"lookup failed: {exc}"]
+            t["injury"] = injuries.get(t["fpId"], [])
+    except Exception as exc:
+        notes.append(f"injury reports unavailable ({exc}); injury status is unchecked")
+        for t in targets:
+            t["injury"] = [f"lookup failed: {exc}"]
 
-    # Per-expert ranks for every target, across all four position groups
+    # Per-expert ranks for every target, across all four position groups.
+    # Stop at the first failure and keep what was fetched; expert_coverage says how much that is.
     target_ids = {t["fpId"] for t in targets}
     picks: dict[int, list[dict]] = {fid: [] for fid in target_ids}
-    for grp, ids in expert_ids_by_grp.items():
-        for e in ids:
-            for fid, info in consensus("weekly", grp, [e], week).items():
-                if fid in target_ids:
-                    picks[fid].append({"expert": expert_names.get(e, str(e)), "rank": info["rank"]})
+    total = sum(len(ids) for ids in expert_ids_by_grp.values())
+    done = 0
+    try:
+        for grp, ids in expert_ids_by_grp.items():
+            for e in ids:
+                for fid, info in consensus("weekly", grp, [e], week).items():
+                    if fid in target_ids:
+                        picks[fid].append({"expert": expert_names.get(e, str(e)), "rank": info["rank"]})
+                done += 1
+    except Exception as exc:
+        notes.append(f"expert picks partial: {done} of {total} experts checked ({exc})")
     for t in targets:
         t["expert_picks"] = sorted(picks[t["fpId"]], key=lambda x: x["rank"])
         ranks = [x["rank"] for x in t["expert_picks"]]
         t["expert_median"] = sorted(ranks)[len(ranks) // 2] if ranks else None
+        t["expert_coverage"] = f"{done}/{total}"
+    return notes
 
 
 def api_week() -> int | None:
     """The NFL week the FantasyPros consensus feed is currently serving."""
-    d = get_json(f"{PARTNERS}?{urllib.parse.urlencode({'sport': 'NFL', 'position': 'QB', 'type': 'weekly', 'scoring': 'STD', 'year': os.environ.get('FP_SEASON', '2026'), 'experts': 'available'})}")
+    d = api_get(f"nfl/{season()}/consensus-rankings", {"position": "QB", "type": "WW", "scoring": "STD",
+                                                       "experts": "available"})
     return int(d["week"]) if d.get("week") else None
 
 
@@ -365,6 +486,27 @@ def period_label(week: int | None) -> str:
         return f"week{int(week):02d}"
     year, wk, _ = dt.date.today().isocalendar()
     return f"{year}-W{wk:02d}"
+
+
+UNAVAILABLE_STATUS = {"OUT", "IR", "INJURED RESERVE", "DOUBTFUL", "PUP", "SUSPENDED"}
+
+
+def unavailable(entries: list[str]) -> bool:
+    """True when the injury entries say the player will not play or is not practicing at all.
+
+    Entries look like "Out | Quad | practice DNP/DNP/DNP | comment". Lookup failures and empty lists are
+    not unavailable: missing data means unchecked, not out.
+    """
+    for entry in entries:
+        parts = [p.strip() for p in entry.split("|")]
+        if parts and parts[0].upper() in UNAVAILABLE_STATUS:
+            return True
+        for part in parts:
+            if part.startswith("practice "):
+                days = part[len("practice "):].split("/")
+                if days and all(d == "DNP" for d in days):
+                    return True
+    return False
 
 
 def on_bye(info: dict, week: int | None) -> bool:
@@ -379,7 +521,7 @@ def load_prior(kind: str, label: str) -> dict | None:
 
 
 def compare_flex(prior: dict, rows: list[dict], flex_ranks: dict, owners: dict, team_id: str,
-                 week: int | None) -> list[dict]:
+                 week: int | None, injury_of: dict[int, list[str]]) -> list[dict]:
     """Compare this week's best FLEX lineup to last week's actual FLEX starters, both at this week's ranks.
 
     Pairs the two lineups best-to-worst. A slot is 'better' only if this week's pick ranks strictly higher.
@@ -395,7 +537,7 @@ def compare_flex(prior: dict, rows: list[dict], flex_ranks: dict, owners: dict, 
         {"fpId": fid, **info}
         for fid, info in flex_ranks.items()
         if info["pos"] in FLEX_POS and (fid not in owners or str(owners[fid]) == team_id)
-        and not on_bye(info, week)
+        and not on_bye(info, week) and not unavailable(injury_of.get(fid, []))
     ]
     best = sorted(pool, key=lambda x: x["rank"])[:n]
     prior_sorted = sorted(prior_starters, key=lambda p: now_rank(p["fpId"]))
@@ -423,12 +565,20 @@ def player_tags(p: dict) -> str:
         parts.append("INJURY: " + "; ".join(p["injury"])[:120])
     if p.get("expert_median") is not None:
         parts.append(f"expert median #{p['expert_median']}")
+    coverage = p.get("expert_coverage")
+    if coverage and coverage.split("/")[0] != coverage.split("/")[1]:
+        parts.append(f"experts checked {coverage}")
     return "  [" + ", ".join(parts) + "]" if parts else ""
 
 
 def report(res: dict) -> None:
     kind = res["kind"]
     print(f"\n=== {kind.upper()} analysis (no roster changes made) ===\n")
+    if res.get("notes"):
+        print("Data status (read before acting on the ranks):")
+        for n in res["notes"]:
+            print(f"  - {n}")
+        print()
     if kind == "weekly":
         print("Start/sit (bench player ranked above a starter in the same group):")
         if not res["start_sit"]:
@@ -487,7 +637,11 @@ def set_env(updates: dict[str, str]) -> None:
 
 
 def discover(team_id: str | None) -> None:
-    """Find the league from the mitmproxy capture and save FP_LEAGUE_KEY / FP_TEAM_ID to .env."""
+    """Find the league from the mitmproxy capture and save FP_LEAGUE_KEY / FP_TEAM_ID to .env.
+
+    Only needed once: the league key is not exposed by the public API, so it comes from the
+    browser's league-roster traffic.
+    """
     cap = ROOT / ".fp_capture"
     entries = [json.loads(l) for l in (cap / "requests.jsonl").read_text().splitlines() if "getLeagueRostersJSON" in l]
     if not entries:
@@ -519,6 +673,19 @@ def main() -> None:
         sys.exit(2)
     kind = sys.argv[1]
     week = int(os.environ["FP_WEEK"]) if os.environ.get("FP_WEEK") else None
+    try:
+        res = run_and_save(kind, week)
+    except RateLimited as exc:
+        raise SystemExit(f"{exc}. Progress is cached; wait a while, then run again.")
+    report(res)
+
+
+def run_and_save(kind: str, week: int | None = None) -> dict:
+    """Run one analysis, save it to .fp_cache (and a history snapshot for weekly), and return it.
+
+    Raises RateLimited if required cheat-sheet data cannot be fetched. Optional data failures
+    are recorded in res["notes"] instead.
+    """
     res = analyse(kind, week)
     CACHE.mkdir(mode=0o700, exist_ok=True)
     out = CACHE / f"{kind}.json"
@@ -530,7 +697,7 @@ def main() -> None:
         snap = HISTORY / f"{kind}-{res['period']}.json"
         snap.write_text(json.dumps(res, indent=2, default=str))
         snap.chmod(0o600)
-    report(res)
+    return res
 
 
 if __name__ == "__main__":
