@@ -9,6 +9,8 @@ The data source is set by `FP_SOURCE` in `.env`. The run tools read it on every 
 
 The league roster comes from the FantasyPros league feed, which needs `FP_LEAGUE_KEY` and `FP_TEAM_ID`. Both sources use it.
 
+The web source also needs ROS data for the net-positive gate in [pick-rules.md](pick-rules.md) section 7, so run `run_ros` alongside `run_weekly`. Expert coverage on the web source can be thin: the `Data status` line shows how many of the requested experts were used per position. Check it against the 5-expert minimum before acting on any median.
+
 The report's first lines say which source ran. The two sources are meant to be compared. When the user asks why a result differs, run both sources and compare the lineup tables. Do not mix their FLEX snapshots: each source keeps its own history.
 
 ## Data buckets

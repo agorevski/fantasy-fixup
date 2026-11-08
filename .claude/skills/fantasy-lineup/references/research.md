@@ -1,6 +1,6 @@
 # Research on recommended players (Step 6, optional)
 
-The rankings do not include news. News is nice to have but **not required** for the assessment. Do not hold the final assessment for it.
+The rankings do not include news. News is nice to have for the lineup assessment and is not required for it. **Exception:** for any proposed add, drop, or swap on the web source, dated role and matchup reporting is required. Without it the move is provisional, not recommended. See [pick-rules.md](pick-rules.md) section 8.
 
 If time and the rate limit allow, use WebSearch for the players you recommend starting, benching, adding, or dropping. Look for:
 
