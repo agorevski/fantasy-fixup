@@ -1,19 +1,26 @@
 """MCP server for the FantasyPros lineup advisor.
 
 Exposes each step of the fantasy-lineup skill as a tool, so the skill calls tools instead of
-running raw Python. Wraps fp_advisor.py; all analysis logic stays there.
+running raw Python. Wraps advisor.py; all analysis logic stays there.
 
 Tools:
     check_config        Step 0: which .env settings are present (never returns values)
+    current_source      Step 0: which data source runs ('api' or 'web'), from FP_SOURCE in .env
+    set_source          Choose the data source; writes FP_SOURCE to .env
+    set_web_session     Web source only: set up the logged-in session by approach
+                        ('mitmproxy' imports the browser capture; 'login' uses .env credentials)
     run_weekly          Step 2: weekly lineup analysis (optional week override)
     run_ros             Step 2: rest-of-season analysis
     list_league_teams   Step 4: list teams from the captured league (no key returned)
     save_team           Step 4: save the chosen team id and league key to .env
     list_snapshots      Step 5: saved weekly snapshots used for the FLEX week-over-week check
 
+The run tools read FP_SOURCE from .env on every call, so changing the source takes effect without a
+restart.
+
 Stdout is the MCP transport, so every call that prints is wrapped in a capture.
 
-Long-running tools (run_weekly, run_ros) stream each stage from fp_advisor as an MCP progress
+Long-running tools (run_weekly, run_ros) stream each stage from advisor as an MCP progress
 notification, plus a heartbeat during quiet stretches. Progress is only sent when the client
 passes a progress token; otherwise the tool just returns its report.
 """
@@ -24,15 +31,19 @@ import io
 import os
 import threading
 import time
-from pathlib import Path
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 
-import fp_advisor as fpa
+from fantasy_lineup import advisor as fpa
+from fantasy_lineup.paths import ENV_FILE
 
-ROOT = Path(__file__).resolve().parent
-load_dotenv(ROOT / ".env")
+load_dotenv(ENV_FILE)
+
+
+def _reload_env() -> None:
+    """Re-read .env so FP_SOURCE and the league settings track edits made while the server runs."""
+    load_dotenv(ENV_FILE, override=True)
 
 HEARTBEAT_SECONDS = 5  # send "still working" if no stage update arrives within this window
 
@@ -62,9 +73,61 @@ def _capture(fn, *args) -> tuple[str, str | None]:
 
 @mcp.tool()
 def check_config() -> dict[str, bool]:
-    """Report which required .env settings are present. Never returns the values."""
-    return {k: bool(os.environ.get(k, "").strip())
-            for k in ("FP_API_KEY", "FP_LEAGUE_KEY", "FP_TEAM_ID", "FP_SEASON")}
+    """Report which .env settings are present, and whether the web session is saved. Never returns values."""
+    _reload_env()
+    from fantasy_lineup import web
+    presence = {k: bool(os.environ.get(k, "").strip())
+                for k in ("FP_API_KEY", "FP_LEAGUE_KEY", "FP_TEAM_ID", "FP_SEASON", "FP_SOURCE",
+                          "FANTASYPROS_USERNAME", "FANTASYPROS_PASSWORD")}
+    presence["web_session_saved"] = web.session_saved()
+    return presence
+
+
+@mcp.tool()
+def current_source() -> str:
+    """Which data source the run tools use: 'api' (public API, default) or 'web' (FantasyPros website)."""
+    _reload_env()
+    try:
+        return fpa.source_name()
+    except SystemExit as exc:
+        return f"ERROR: {exc.code}"
+
+
+@mcp.tool()
+def set_source(source: str) -> str:
+    """Set FP_SOURCE in .env to 'api' or 'web'. Ask the user which source they want first."""
+    value = source.strip().lower()
+    if value not in ("api", "web"):
+        return "ERROR: source must be 'api' or 'web'"
+    fpa.set_env({"FP_SOURCE": value})
+    _reload_env()
+    return f"FP_SOURCE set to {value}"
+
+
+@mcp.tool()
+async def set_web_session(approach: str) -> str:
+    """Web source only. Set up the logged-in session the website needs.
+
+    approach 'mitmproxy' (default): import the cookies from the browser capture (var/capture/auth.json).
+    approach 'login': sign in with FANTASYPROS_USERNAME / FANTASYPROS_PASSWORD from .env in a visible
+    browser window, so the user can finish any verification check.
+    Never returns credentials or cookie values.
+    """
+    from fantasy_lineup import web
+    _reload_env()
+    if approach not in ("mitmproxy", "login"):
+        return "ERROR: approach must be 'mitmproxy' or 'login'"
+
+    def go():
+        if approach == "mitmproxy":
+            web.import_capture_session()
+        else:
+            web.login_with_env()
+
+    text, problem = await asyncio.to_thread(_capture, go)
+    if problem:
+        return f"{text}\nERROR: {problem}".strip()
+    return f"Session saved via {approach}. Logged in: {web.session_logged_in()}"
 
 
 async def _capture_streaming(ctx: Context, fn, *args) -> tuple[str, str | None]:
@@ -104,6 +167,8 @@ async def _capture_streaming(ctx: Context, fn, *args) -> tuple[str, str | None]:
 
 
 async def _run(ctx: Context, kind: str, week: int | None) -> str:
+    _reload_env()
+
     def go():
         res = fpa.run_and_save(kind, week)
         fpa.report(res)
@@ -145,9 +210,13 @@ def save_team(team_id: str) -> str:
 
 @mcp.tool()
 def list_snapshots() -> str:
-    """List saved weekly snapshots, which the FLEX week-over-week check compares against."""
-    files = sorted(p.name for p in fpa.HISTORY.glob("weekly-*.json")) if fpa.HISTORY.exists() else []
-    return "\n".join(files) if files else "no snapshots saved yet"
+    """List saved weekly snapshots, which the FLEX week-over-week check compares against. Shows the source of each."""
+    lines = []
+    for source in ("api", "web"):
+        hist = fpa.history_dir(source)
+        if hist.exists():
+            lines += [f"{source}: {p.name}" for p in sorted(hist.glob("weekly-*.json"))]
+    return "\n".join(lines) if lines else "no snapshots saved yet"
 
 
 if __name__ == "__main__":

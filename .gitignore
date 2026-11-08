@@ -1,7 +1,5 @@
 .env
-.fp_session.json
-.fp_capture/
-.fp_cache/
+var/
 .venv/
 __pycache__/
 *.pyc

@@ -3,7 +3,10 @@
     "fantasy-lineup": {
       "type": "stdio",
       "command": ".venv/bin/python",
-      "args": ["fp_mcp_server.py"]
+      "args": ["-m", "fantasy_lineup.mcp_server"],
+      "env": {
+        "PYTHONPATH": "src"
+      }
     }
   }
 }

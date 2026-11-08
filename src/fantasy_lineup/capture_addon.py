@@ -1,14 +1,14 @@
 """mitmproxy addon: record FantasyPros traffic from your own browser session.
 
-Run with:  .venv/bin/mitmdump -s capture_addon.py -p 8080
+Run with:  .venv/bin/mitmdump -s src/fantasy_lineup/capture_addon.py -p 8080
 
 Only requests to *.fantasypros.com are kept; everything else is ignored.
-Two outputs, both under .fp_capture/ (gitignored):
+Two outputs, both under var/capture/ (gitignored):
   - requests.jsonl : method, URL, status, response size and type, and a redacted
                      view of headers (cookie/auth values replaced by "<redacted>").
   - auth.json      : full request headers from the most recent FantasyPros request,
                      written chmod 600, so later scripts can reuse the session.
-Response bodies for JSON endpoints are saved to .fp_capture/bodies/ so the API
+Response bodies for JSON endpoints are saved to var/capture/bodies/ so the API
 shapes can be read without re-running the browser.
 """
 
@@ -19,7 +19,8 @@ from pathlib import Path
 
 from mitmproxy import http
 
-OUT = Path(__file__).resolve().parent / ".fp_capture"
+# Loaded by mitmdump as a script, so it does not import the package. This file is src/fantasy_lineup/.
+OUT = Path(__file__).resolve().parents[2] / "var" / "capture"
 BODIES = OUT / "bodies"
 SENSITIVE = {"cookie", "authorization", "set-cookie", "x-csrf-token", "x-xsrf-token"}
 MAX_BODY = 2_000_000

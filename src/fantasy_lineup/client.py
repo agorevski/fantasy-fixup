@@ -1,8 +1,8 @@
 """Headless-Chromium client for FantasyPros.
 
-Login is manual: `python fp_client.py login` opens a visible browser at the
+Login is manual: `python -m fantasy_lineup.client login` opens a visible browser at the
 sign-in page, you sign in yourself (including any verification prompt), and the
-script saves the resulting session cookies to .fp_session.json (chmod 600,
+script saves the resulting session cookies to var/session.json (chmod 600,
 gitignored). Later runs reuse that session headlessly. Credentials are never
 typed or stored by the script.
 
@@ -18,14 +18,13 @@ import re
 import sys
 import time
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Iterator
 
 from dotenv import load_dotenv
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 
-ROOT = Path(__file__).resolve().parent
-SESSION_FILE = ROOT / ".fp_session.json"
+from fantasy_lineup.paths import ENV_FILE, SESSION_FILE
+
 BASE = "https://www.fantasypros.com"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -39,7 +38,7 @@ class FPError(RuntimeError):
 
 
 def load_config() -> dict:
-    load_dotenv(ROOT / ".env")
+    load_dotenv(ENV_FILE)
     return {
         "headless": os.environ.get("FP_HEADLESS", "true").lower() != "false",
         "season": os.environ.get("FP_SEASON") or None,
@@ -88,14 +87,14 @@ def manual_login() -> None:
                 pass  # page mid-navigation; keep polling
             time.sleep(2)
         browser.close()
-    raise FPError("Sign-in was not detected. Run `python fp_client.py login` again.")
+    raise FPError("Sign-in was not detected. Run `python -m fantasy_lineup.client login` again.")
 
 
 @contextmanager
 def fp_session(cfg: dict | None = None) -> Iterator[Page]:
     """Yield a logged-in Page using the saved session. Raises FPError if none is valid."""
     if not SESSION_FILE.exists():
-        raise FPError("No saved session. Run `python fp_client.py login` and sign in.")
+        raise FPError("No saved session. Run `python -m fantasy_lineup.client login` and sign in.")
     cfg = cfg or load_config()
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=cfg["headless"])
@@ -107,7 +106,7 @@ def fp_session(cfg: dict | None = None) -> Iterator[Page]:
             page.goto(f"{BASE}/nfl/rankings/qb.php", wait_until="domcontentloaded")
             if not _is_logged_in(page):
                 raise FPError(
-                    "Saved session has expired. Run `python fp_client.py login` again."
+                    "Saved session has expired. Run `python -m fantasy_lineup.client login` again."
                 )
             yield page
         finally:
@@ -145,5 +144,5 @@ if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "login":
         manual_login()
     else:
-        print("usage: python fp_client.py login", file=sys.stderr)
+        print("usage: python -m fantasy_lineup.client login", file=sys.stderr)
         sys.exit(2)
