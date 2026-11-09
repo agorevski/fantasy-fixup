@@ -1,9 +1,9 @@
 ---
-name: fantasy-lineup
+name: fantasy-fixup
 description: Weekly FantasyPros-based lineup, start/sit, waiver add, and drop analysis for the Yahoo league synced to FantasyPros. Builds the best legal lineup for the league's slots, settles close calls by the matchup, gates every add/drop on weekly and rest-of-season expert consensus with dated FantasyPros evidence, flags byes ahead, and grades past weeks. Uses FantasyPros data only. Read-only; it recommends moves and never changes the roster. Use when the user asks for weekly or rest-of-season lineup, waiver, or drop suggestions, or how last week's advice did.
 ---
 
-# fantasy-lineup
+# fantasy-fixup
 
 Produces weekly (`weekly`) or rest-of-season (`ros`) suggestions for QB, RB/WR/TE (FLEX), K, and DST.
 

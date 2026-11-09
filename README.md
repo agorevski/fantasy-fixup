@@ -2,7 +2,7 @@
 
 A small Python package that reads FantasyPros expert rankings, projections, injuries, and news, plus your league's roster and matchup, then suggests weekly lineup changes, waiver adds, and drops. Every input comes from FantasyPros. The advisor is **read-only**: it never changes your roster.
 
-It can be run from the command line, or through Claude Code using the `fantasy-lineup` MCP server and skill.
+It can be run from the command line, or through Claude Code using the `fantasy-lineup` MCP server and the `fantasy-fixup` skill.
 
 ## What it does
 
@@ -22,7 +22,7 @@ Weekly rankings use the experts FantasyPros rates most accurate (QB/K/DST: the t
 
 ```
 .
-├── .claude/skills/fantasy-lineup/   Claude Code skill: SKILL.md and on-demand references/
+├── .claude/skills/fantasy-fixup/    Claude Code skill: SKILL.md and on-demand references/
 ├── docs/
 │   └── fantasypros_v2_public.yml    FantasyPros API reference
 ├── src/fantasy_lineup/              Python package (all source code)
@@ -64,7 +64,7 @@ Weekly rankings use the experts FantasyPros rates most accurate (QB/K/DST: the t
 | `src/fantasy_lineup/capture_addon.py` | mitmproxy addon that records your own browser's FantasyPros traffic. Used once to find your league key. |
 | `src/fantasy_lineup/paths.py` | Defines every file and directory location the package uses. |
 | `docs/fantasypros_v2_public.yml` | API reference for the FantasyPros endpoints. |
-| `.claude/skills/fantasy-lineup/SKILL.md` | Instructions for running the weekly/ROS analysis through Claude Code. |
+| `.claude/skills/fantasy-fixup/SKILL.md` | Instructions for running the weekly/ROS analysis through Claude Code. |
 
 ## Requirements
 
@@ -192,7 +192,7 @@ The server exposes these tools:
 | `season_log` | Season totals of graded weeks. |
 | `list_snapshots` | Lists the saved weekly snapshots. |
 
-The `fantasy-lineup` skill calls these tools in order: check config, run the analysis, and report back.
+The `fantasy-fixup` skill calls these tools in order: check config, run the analysis, and report back.
 
 ## Privacy and security
 

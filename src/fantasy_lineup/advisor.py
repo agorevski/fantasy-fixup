@@ -886,7 +886,7 @@ def discover(team_id: str | None) -> None:
     cap = CAPTURE_DIR
     entries = [json.loads(l) for l in (cap / "requests.jsonl").read_text().splitlines() if "getLeagueRostersJSON" in l]
     if not entries:
-        raise SystemExit("No league capture found. Run the mitmproxy capture (see the fantasy-lineup skill) first.")
+        raise SystemExit("No league capture found. Run the mitmproxy capture (see the fantasy-fixup skill) first.")
     entry = entries[-1]
     key = urllib.parse.parse_qs(urllib.parse.urlsplit(entry["url"]).query).get("key", [""])[0]
     league = json.loads((cap / entry["body_file"]).read_text())
