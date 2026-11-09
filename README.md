@@ -1,12 +1,14 @@
-# FantasyPros Fixer
+# Fantasy Fixup
 
-A small Python package that reads FantasyPros expert rankings, projections, injuries, and news, plus your league's roster and matchup, then suggests weekly lineup changes, waiver adds, and drops. Every input comes from FantasyPros. The advisor is **read-only**: it never changes your roster.
+**You download the data. Your agent does the work for you.**
 
-It can be run from the command line, or through Claude Code using the `fantasy-lineup` MCP server and the `fantasy-fixup` skill.
+Fantasy Fixup reads FantasyPros expert rankings, projections, injuries, and news, plus your league's roster and matchup, then tells you who to start, who to add, and who to cut loose. Every input comes from FantasyPros. The advisor is **read-only**, so it will suggest moves but never touch your roster. You still have the final say (and the final click).
+
+You can run it from the command line, or hand it to Claude Code through the `fantasy-lineup` MCP server and the `fantasy-fixup` skill and let your agent handle the rest.
 
 ## What it does
 
-`advisor` runs one of two analyses:
+`advisor` runs one of three analyses:
 
 - **`weekly`**:
   - The best **legal** lineup for your league's starting slots, read from the league feed. Players whose game has started stay locked.
