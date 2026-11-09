@@ -24,7 +24,7 @@ Produces weekly (`weekly`) or rest-of-season (`ros`) suggestions for QB, RB/WR/T
 | `current_source` | Step 0: which data source runs, `api` or `web` (from `FP_SOURCE`) |
 | `set_source` | Step 0: set `FP_SOURCE` to `api` or `web` after the user chooses |
 | `set_web_session` | Step 0 (web source only): set up the logged-in session by approach, `mitmproxy` or `login` |
-| `run_weekly` | Weekly analysis: lineup, close calls, gated add/drops (it loads ROS data itself); optional `week` |
+| `run_weekly` | Weekly analysis: lineup, close calls, gated add/drops for the current week only (it loads ROS data itself) |
 | `run_ros` | Rest-of-season add/drop view (only when asked) |
 | `player_news` | FantasyPros news for up to 6 player ids (the `fpId` values in the report). Needs `FP_API_KEY` |
 | `grade_week` | Score a past week's advice with FantasyPros' actual points; updates the season log |

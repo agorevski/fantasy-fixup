@@ -9,7 +9,7 @@ Tools:
     set_source          Choose the data source; writes FP_SOURCE to .env
     set_web_session     Web source only: set up the logged-in session by approach
                         ('mitmproxy' imports the browser capture; 'login' uses .env credentials)
-    run_weekly          Step 2: weekly lineup, close calls, gated add/drops (optional week override)
+    run_weekly          Step 2: weekly lineup, close calls, gated add/drops (current week only)
     run_ros             Step 2: rest-of-season add/drop view
     player_news         FantasyPros news for given player ids (needs FP_API_KEY)
     grade_week          Score a past week's advice with actual FantasyPros points; updates the season log
@@ -182,14 +182,14 @@ async def _run(ctx: Context, kind: str, week: int | None) -> str:
 
 
 @mcp.tool()
-async def run_weekly(ctx: Context, week: int | None = None) -> str:
-    """Run the weekly analysis and return the report. Week defaults to the current NFL week.
+async def run_weekly(ctx: Context) -> str:
+    """Run the weekly analysis for the current NFL week and return the report.
 
     Returns the best legal lineup for the league's slots, close calls, add/drop moves with every gate
     and evidence item already evaluated (RECOMMEND / PROVISIONAL / held), byes ahead, and Data status.
     Cheat-sheet rankings and the roster are required; everything else is optional and noted if missing.
     """
-    return await _run(ctx, "weekly", week)
+    return await _run(ctx, "weekly", None)
 
 
 @mcp.tool()
