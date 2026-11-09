@@ -1,0 +1,11 @@
+{
+  "name": "read-players-tab",
+  "description": "Read-only: open the Players tab and confirm the free-agent list is showing. Changes nothing.",
+  "steps": [
+    {"op": "launch"},
+    {"op": "tap", "label": "Players", "exact": true},
+    {"op": "wait", "label": "Trending", "timeout": 8},
+    {"op": "tap", "label": "Team", "exact": true},
+    {"op": "wait", "label": "Bench", "timeout": 8}
+  ]
+}
