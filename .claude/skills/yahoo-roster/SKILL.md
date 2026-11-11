@@ -55,7 +55,17 @@ Every command was run on the Pixel 8 Pro: `devices`, `launch`, `screen --grep`, 
 | Open a player card from the Team tab | Works (`Close` returns) |
 | Open the Players tab; list `Claim` buttons | Works |
 | Move a player into a starting slot (Team tab) | Works (`recipes/move-player-to-slot.json`). The unlabeled button left of each player's name opens a "Move Player" sheet; its row with content description `QB slot` (or the target slot) moves the player in and benches the current starter. Used on 2026-11-11 to start P. Mahomes over D. Prescott (verified on the Team tab). |
-| Swap players (Players tab: claim, then choose a drop) | **Not yet mapped.** The `Claim` button opens a flow whose drop-selection screen and confirm button are unknown. No recipe yet. Do not run it |
+| Swap players (Players tab: Claim, then choose a drop) | Works (`recipes/swap-players.json`). Filter by position chip, tap `Claim` on the add's row, tick the drop's checkbox on the Add Player sheet, then `Add & Drop` and `Confirm Claim`. Used on 2026-11-11 to claim C. Tate and drop K. Pitts Sr. (claim submitted; Tate is off waivers Nov 14, so the add processes at waivers). |
+
+## Finding a player: position chips first
+
+On the Players tab, use the position chips in the filter bar (`All`, `QB`, `RB`, `WR`, `TE`, `W/R/T`, and K/DEF further along the bar). Pick the chip for the player's position, then find the row. Use `Search by player name` only as a last resort, when the player is not in any chip list or the chip list has no match. Recipes use `tap_filter` and `scroll_to`; they never search by name.
+
+Position chips and the drop checkbox are both unlabeled in some views. Use `tap_filter`, `tap_row_action`, `tap_handle`, `verify_checked` in recipes. Do not use `tap` on a bare position label such as `WR`: the label also appears on every player row.
+
+## Claims and waivers
+
+A player marked `Off Waivers <date>` cannot be added instantly. The `Claim` button submits a waiver claim, and the drop happens when the claim processes. Tell the user that the change is pending, not done, and check the Team tab after the waiver date.
 
 Do not run a roster change until its recipe has been checked with a dry run and the user has confirmed the exact move.
 

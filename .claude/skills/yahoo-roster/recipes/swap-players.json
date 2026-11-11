@@ -1,0 +1,74 @@
+{
+  "name": "swap-players",
+  "description": "Claim a free agent and drop a rostered player from the Players tab. Uses the position chips (QB, RB, WR, TE, W/R/T, K, DEF) to find the add, then the Claim button on its row, then the drop checkbox on the Add Player sheet. Nothing is committed until the final Confirm Claim tap, which is a roster change. Start on the league page (Team, Matchup, Players tabs visible). Params: add_player (e.g. C. Tate), add_filter (position chip, e.g. WR), drop_player (e.g. K. Pitts Sr.). Player search is not used.",
+  "steps": [
+    {
+      "op": "tap",
+      "label": "Players",
+      "exact": true
+    },
+    {
+      "op": "wait",
+      "label": "All Filters",
+      "timeout": 8
+    },
+    {
+      "op": "tap_filter",
+      "label": "{add_filter}"
+    },
+    {
+      "op": "sleep",
+      "seconds": 1
+    },
+    {
+      "op": "scroll_to",
+      "label": "{add_player}"
+    },
+    {
+      "op": "tap_row_action",
+      "label": "{add_player}",
+      "action": "Claim"
+    },
+    {
+      "op": "wait",
+      "label": "Add Player",
+      "timeout": 8
+    },
+    {
+      "op": "scroll_to",
+      "label": "{drop_player}"
+    },
+    {
+      "op": "tap_handle",
+      "label": "{drop_player}"
+    },
+    {
+      "op": "sleep",
+      "seconds": 1
+    },
+    {
+      "op": "verify_checked",
+      "label": "{drop_player}"
+    },
+    {
+      "op": "tap",
+      "label": "Add & Drop",
+      "exact": true
+    },
+    {
+      "op": "wait",
+      "label": "Confirm Claim",
+      "timeout": 8
+    },
+    {
+      "op": "tap",
+      "label": "Confirm Claim",
+      "exact": true,
+      "mutates": true
+    },
+    {
+      "op": "sleep",
+      "seconds": 3
+    }
+  ]
+}

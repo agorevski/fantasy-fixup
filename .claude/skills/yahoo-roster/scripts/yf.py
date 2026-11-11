@@ -143,32 +143,132 @@ def _node_box(node):
     return tuple(map(int, m.groups())) if m else None
 
 
-def tap_handle(serial, name):
-    """Tap the unlabeled button left of a player's name on the Team tab (the Move Player control).
+def _name_match(node, name):
+    """True if the node is a player's name: exact text, or a row label that starts 'NAME.' (Players list)."""
+    label = (node.get("text") or node.get("content-desc") or "").strip().casefold()
+    needle = name.casefold()
+    return label == needle or label.startswith(needle + ".")
 
-    The button is a clickable node on the same row, to the left of the name, that spans the
-    name's vertical centre. Returns (code, message) like tap_label.
+
+def _name_node(root, name):
+    """The first on-screen node for a player name, with its box, or None."""
+    for n in root.iter("node"):
+        box = _node_box(n)
+        if box and _name_match(n, name):
+            return n, box
+    return None, None
+
+
+def _row_has(box, cy):
+    return box[1] <= cy <= box[3]
+
+
+def tap_handle(serial, name):
+    """Tap the unlabeled control left of a player's name on the same row.
+
+    On the Team tab this is the Move Player button; on the drop list it is the checkbox.
+    The control is a clickable node to the left of the name that spans the name's vertical
+    centre. Returns (code, message) like tap_label.
     """
     root = dump(serial)
     nodes = [n for n in root.iter("node") if _node_box(n)]
-    names = [n for n in nodes if (n.get("text") or "").strip().casefold() == name.casefold()]
-    if not names:
+    _, name_box = _name_node(root, name)
+    if not name_box:
         return 2, f"not found: player {name!r}"
-    x1, y1, x2, y2 = _node_box(names[0])
-    cy = (y1 + y2) // 2
+    cy = (name_box[1] + name_box[3]) // 2
     handles = []
     for n in nodes:
         if n.get("clickable") != "true":
             continue
         hx1, hy1, hx2, hy2 = _node_box(n)
-        if hx2 <= x1 and hy1 <= cy <= hy2:
+        if hx2 <= name_box[0] and hy1 <= cy <= hy2:
             handles.append((hx1, hy1, hx2, hy2))
     if not handles:
-        return 2, f"no row button found for {name!r}"
+        return 2, f"no row control found for {name!r}"
     hx1, hy1, hx2, hy2 = min(handles, key=lambda b: b[0])
     x, y = (hx1 + hx2) // 2, (hy1 + hy2) // 2
     adb("shell", "input", "tap", str(x), str(y), serial=serial)
-    return 0, f"tapped row button for {name!r} at {x},{y}"
+    return 0, f"tapped row control for {name!r} at {x},{y}"
+
+
+def tap_row_action(serial, name, action):
+    """Tap a labelled action on a player's row, e.g. 'Claim' or 'ADD' (Players list)."""
+    root = dump(serial)
+    _, name_box = _name_node(root, name)
+    if not name_box:
+        return 2, f"not found: player {name!r}"
+    cy = (name_box[1] + name_box[3]) // 2
+    hits = []
+    for n in root.iter("node"):
+        box = _node_box(n)
+        label = (n.get("text") or n.get("content-desc") or "").strip().casefold()
+        if box and label == action.casefold() and _row_has(box, cy):
+            hits.append((n.get("clickable") != "true", box))
+    if not hits:
+        return 2, f"no {action!r} button on the row for {name!r}"
+    _, (x1, y1, x2, y2) = min(hits, key=lambda h: h[0])
+    x, y = (x1 + x2) // 2, (y1 + y2) // 2
+    adb("shell", "input", "tap", str(x), str(y), serial=serial)
+    return 0, f"tapped {action!r} for {name!r} at {x},{y}"
+
+
+def tap_filter(serial, label):
+    """Tap a position chip (QB, RB, WR, TE, W/R/T, K, DEF...) in the Players filter bar.
+
+    The bar is the row that holds 'All Filters'. Chips are matched only within that row,
+    so a 'WR' label inside a player row is never tapped by mistake.
+    """
+    root = dump(serial)
+    _, bar = _name_node_text(root, "All Filters")
+    if not bar:
+        return 2, "filter bar not found (is the Players tab open?)"
+    cy = (bar[1] + bar[3]) // 2
+    hits = []
+    for n in root.iter("node"):
+        box = _node_box(n)
+        text = (n.get("text") or n.get("content-desc") or "").strip().casefold()
+        if box and text == label.casefold() and abs((box[1] + box[3]) // 2 - cy) <= 40:
+            hits.append((n.get("clickable") != "true", box))
+    if not hits:
+        return 2, f"filter chip {label!r} not found"
+    _, (x1, y1, x2, y2) = min(hits, key=lambda h: h[0])
+    x, y = (x1 + x2) // 2, (y1 + y2) // 2
+    adb("shell", "input", "tap", str(x), str(y), serial=serial)
+    return 0, f"tapped filter {label!r} at {x},{y}"
+
+
+def _name_node_text(root, text):
+    for n in root.iter("node"):
+        box = _node_box(n)
+        if box and (n.get("text") or n.get("content-desc") or "").strip() == text:
+            return n, box
+    return None, None
+
+
+def scroll_to(serial, name, max_swipes=6):
+    """Swipe up until a player name is on screen. Returns (code, message)."""
+    for _ in range(max_swipes + 1):
+        if _name_node(dump(serial), name)[1]:
+            return 0, f"{name!r} is on screen"
+        cmd_swipe(argparse.Namespace(direction="up"), serial)
+        time.sleep(1)
+    return 2, f"not found after {max_swipes} swipes: {name!r}"
+
+
+def checked_state(serial, name):
+    """(code, message) for whether the checkbox on a player's row is checked."""
+    root = dump(serial)
+    _, name_box = _name_node(root, name)
+    if not name_box:
+        return 2, f"not found: player {name!r}"
+    cy = (name_box[1] + name_box[3]) // 2
+    for n in root.iter("node"):
+        box = _node_box(n)
+        if box and n.get("class", "").endswith("CheckBox") and box[2] <= name_box[0] and _row_has(box, cy):
+            if n.get("checked") == "true":
+                return 0, f"{name!r} is checked"
+            return 2, f"{name!r} is not checked"
+    return 2, f"no checkbox on the row for {name!r}"
 
 
 def tap_desc(serial, desc):
@@ -255,7 +355,10 @@ def cmd_swipe(args, serial):
 
 
 def run_recipe(path, params, confirmed, serial):
-    """Execute a recipe. Steps: tap, wait, type, key, swipe, launch, sleep.
+    """Execute a recipe. Steps: tap, wait, type, key, swipe, launch, sleep, tap_desc,
+    tap_handle (row control left of a player), tap_row_action (e.g. Claim on a player's row),
+    tap_filter (position chip in the Players filter bar), scroll_to (swipe until a player is
+    on screen), verify_checked (checkbox on a player's row is checked).
 
     A step may set "mutates": true (roster change). Those steps are printed in a dry run
     and only executed when confirmed. Placeholders like {player} come from --set.
@@ -298,6 +401,26 @@ def run_recipe(path, params, confirmed, serial):
                 _step_failed(serial, i)
         elif op == "tap_desc":
             code, msg = tap_desc(serial, fill(step["desc"]))
+            print("   " + msg)
+            if code and not step.get("optional"):
+                _step_failed(serial, i)
+        elif op == "tap_filter":
+            code, msg = tap_filter(serial, label)
+            print("   " + msg)
+            if code and not step.get("optional"):
+                _step_failed(serial, i)
+        elif op == "tap_row_action":
+            code, msg = tap_row_action(serial, label, fill(step["action"]))
+            print("   " + msg)
+            if code and not step.get("optional"):
+                _step_failed(serial, i)
+        elif op == "scroll_to":
+            code, msg = scroll_to(serial, label)
+            print("   " + msg)
+            if code and not step.get("optional"):
+                _step_failed(serial, i)
+        elif op == "verify_checked":
+            code, msg = checked_state(serial, label)
             print("   " + msg)
             if code and not step.get("optional"):
                 _step_failed(serial, i)
