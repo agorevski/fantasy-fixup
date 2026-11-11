@@ -12,6 +12,7 @@ Commands:
   type TEXT                     Type plain text into the focused field
   key back|home|enter           Press a key
   swipe up|down                 Swipe the screen
+  tapxy X Y                     Tap raw screen coordinates (for unlabeled controls)
   run RECIPE [--set k=v ...] [--confirmed]
                                 Run a recipe JSON file. Dry run unless --confirmed,
                                 and mutating steps run only with --confirmed.
@@ -137,6 +138,51 @@ def tap_label(serial, label, exact=False, nth=None):
     return 0, f"tapped {target['label'][:60]!r} at {target['x']},{target['y']}"
 
 
+def _node_box(node):
+    m = BOUNDS.fullmatch(node.get("bounds", ""))
+    return tuple(map(int, m.groups())) if m else None
+
+
+def tap_handle(serial, name):
+    """Tap the unlabeled button left of a player's name on the Team tab (the Move Player control).
+
+    The button is a clickable node on the same row, to the left of the name, that spans the
+    name's vertical centre. Returns (code, message) like tap_label.
+    """
+    root = dump(serial)
+    nodes = [n for n in root.iter("node") if _node_box(n)]
+    names = [n for n in nodes if (n.get("text") or "").strip().casefold() == name.casefold()]
+    if not names:
+        return 2, f"not found: player {name!r}"
+    x1, y1, x2, y2 = _node_box(names[0])
+    cy = (y1 + y2) // 2
+    handles = []
+    for n in nodes:
+        if n.get("clickable") != "true":
+            continue
+        hx1, hy1, hx2, hy2 = _node_box(n)
+        if hx2 <= x1 and hy1 <= cy <= hy2:
+            handles.append((hx1, hy1, hx2, hy2))
+    if not handles:
+        return 2, f"no row button found for {name!r}"
+    hx1, hy1, hx2, hy2 = min(handles, key=lambda b: b[0])
+    x, y = (hx1 + hx2) // 2, (hy1 + hy2) // 2
+    adb("shell", "input", "tap", str(x), str(y), serial=serial)
+    return 0, f"tapped row button for {name!r} at {x},{y}"
+
+
+def tap_desc(serial, desc):
+    """Tap the element whose content description equals DESC (for example a Move Player option)."""
+    root = dump(serial)
+    hits = [n for n in root.iter("node") if n.get("content-desc") == desc and _node_box(n)]
+    if not hits:
+        return 2, f"not found: description {desc!r}"
+    x1, y1, x2, y2 = _node_box(hits[0])
+    x, y = (x1 + x2) // 2, (y1 + y2) // 2
+    adb("shell", "input", "tap", str(x), str(y), serial=serial)
+    return 0, f"tapped description {desc!r} at {x},{y}"
+
+
 def cmd_devices(args, serial):
     model = adb("shell", "getprop", "ro.product.model", serial=serial).strip()
     print(f"serial={serial} model={model}")
@@ -168,6 +214,12 @@ def cmd_tap(args, serial):
     code, msg = tap_label(serial, args.label, args.exact, args.nth)
     print(msg, file=sys.stderr if code else sys.stdout)
     return code
+
+
+def cmd_tapxy(args, serial):
+    adb("shell", "input", "tap", str(args.x), str(args.y), serial=serial)
+    print(f"tapped {args.x},{args.y}")
+    return 0
 
 
 def cmd_wait(args, serial):
@@ -221,7 +273,7 @@ def run_recipe(path, params, confirmed, serial):
 
     steps = recipe["steps"]
     for i, step in enumerate(steps, 1):
-        label = fill(step.get("label", ""))
+        label = fill(step.get("label", step.get("desc", "")))
         desc = step["op"] + (f" {label!r}" if label else "")
         if "text" in step:
             desc += f" text={fill(step['text'])!r}"
@@ -236,6 +288,16 @@ def run_recipe(path, params, confirmed, serial):
             cmd_launch(None, serial)
         elif op == "tap":
             code, msg = tap_label(serial, label, step.get("exact", False), step.get("nth"))
+            print("   " + msg)
+            if code and not step.get("optional"):
+                _step_failed(serial, i)
+        elif op == "tap_handle":
+            code, msg = tap_handle(serial, label)
+            print("   " + msg)
+            if code and not step.get("optional"):
+                _step_failed(serial, i)
+        elif op == "tap_desc":
+            code, msg = tap_desc(serial, fill(step["desc"]))
             print("   " + msg)
             if code and not step.get("optional"):
                 _step_failed(serial, i)
@@ -291,6 +353,9 @@ def build_parser():
     t.add_argument("label")
     t.add_argument("--exact", action="store_true")
     t.add_argument("--nth", type=int)
+    tx = sub.add_parser("tapxy")
+    tx.add_argument("x", type=int)
+    tx.add_argument("y", type=int)
     w = sub.add_parser("wait")
     w.add_argument("label")
     w.add_argument("--timeout", type=float, default=10)
@@ -309,7 +374,7 @@ def build_parser():
 
 HANDLERS = {
     "devices": cmd_devices, "launch": cmd_launch, "screen": cmd_screen, "tap": cmd_tap,
-    "wait": cmd_wait, "type": cmd_type, "key": cmd_key, "swipe": cmd_swipe, "run": cmd_run,
+    "tapxy": cmd_tapxy, "wait": cmd_wait, "type": cmd_type, "key": cmd_key, "swipe": cmd_swipe, "run": cmd_run,
 }
 
 

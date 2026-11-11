@@ -1,0 +1,15 @@
+{
+  "name": "move-player-to-slot",
+  "description": "Move a player into a starting slot on the Team tab (for example start a bench QB, which benches the current starter). Opens the row's Move Player sheet via the unlabeled button left of the name, then taps the target slot. The final tap is a roster change. Params: league, player (name as shown, e.g. P. Mahomes), slot_desc (content description of the target row, e.g. QB slot).",
+  "steps": [
+    {"op": "launch"},
+    {"op": "tap", "label": "{league}", "exact": true},
+    {"op": "sleep", "seconds": 2},
+    {"op": "tap", "label": "Team", "exact": true},
+    {"op": "wait", "label": "Starters", "timeout": 8},
+    {"op": "tap_handle", "label": "{player}"},
+    {"op": "wait", "label": "Move Player", "timeout": 5},
+    {"op": "tap_desc", "desc": "{slot_desc}", "mutates": true},
+    {"op": "sleep", "seconds": 3}
+  ]
+}

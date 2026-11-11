@@ -27,8 +27,10 @@ python3 -I $S screen [--grep TEXT] [--max N]   # '*' marks clickable; use --grep
 python3 -I $S tap "LABEL" [--exact] [--nth N]  # exit 2 = not found, 3 = ambiguous
 python3 -I $S wait "LABEL" [--timeout 10]      # exit 4 = timed out
 python3 -I $S swipe up|down
+python3 -I $S tapxy X Y                        # raw coordinates, for unlabeled controls
 python3 -I $S key back|home|enter
 python3 -I $S run RECIPE.json --set player="NAME" [--confirmed]
+python3 -I $S run recipes/move-player-to-slot.json --set league="Emo Rage Nerd Core" --set player="P. Mahomes" --set slot_desc="QB slot"
 ```
 
 Set `YF_SERIAL` to the phone's adb serial. If it is unset, the first attached device with the Yahoo app is used.
@@ -52,7 +54,11 @@ Every command was run on the Pixel 8 Pro: `devices`, `launch`, `screen --grep`, 
 | Read the Team tab (slots, bench header) | Works |
 | Open a player card from the Team tab | Works (`Close` returns) |
 | Open the Players tab; list `Claim` buttons | Works |
-| Move a player between starters and bench (Team tab) | **PLACEHOLDER: not yet mapped.** The player card has no obvious Start or Bench button. Likely a long-press drag or an Edit control. Blocked for now: the Team tab is in a locked mode while the user's players have already played this week, so moves are disabled. Re-check the Team tab in a few days (after the current week's games finish and the next week's lineup opens) and map the move flow then. Until then, do not attempt Team-tab moves |
-| Swap players (Players tab: claim, then choose a drop) | **Not yet mapped.** The `Claim` button opens a flow whose drop-selection screen and confirm button are unknown |
+| Move a player into a starting slot (Team tab) | Works (`recipes/move-player-to-slot.json`). The unlabeled button left of each player's name opens a "Move Player" sheet; its row with content description `QB slot` (or the target slot) moves the player in and benches the current starter. Used on 2026-11-11 to start P. Mahomes over D. Prescott (verified on the Team tab). |
+| Swap players (Players tab: claim, then choose a drop) | **Not yet mapped.** The `Claim` button opens a flow whose drop-selection screen and confirm button are unknown. No recipe yet. Do not run it |
 
-Recipes for the two unmapped flows are not written yet. Do not run a roster change until its recipe is mapped and the user has confirmed.
+Do not run a roster change until its recipe has been checked with a dry run and the user has confirmed the exact move.
+
+## Unlabeled controls
+
+Some controls have no text (the row button by each player's name). Use the recipe ops `tap_handle` (taps the button left of a named player) and `tap_desc` (taps an element by content description), or the command `tapxy X Y` for raw coordinates. Coordinates shift with scroll position, so prefer the recipe ops.
